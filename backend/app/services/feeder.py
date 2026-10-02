@@ -7,9 +7,10 @@ from app.store import store
 
 MODULE = "feeder"
 REQUIRED_FIELDS = ["馈线编号", "所属站点", "馈线长度"]
+ENTRY_FIELDS = ["馈线编号", "所属站点", "馈线长度", "接头数量", "防水情况", "接地电阻", "巡检日期", "馈线状态"]
 STATUS_ORDER = ["正常", "防水失效", "接地超标", "已修复"]
 ACTION_RULES = {"登记失效": "防水失效", "登记超标": "接地超标", "安排修复": "已修复"}
-NEGATIVE_ACTIONS = []
+NEGATIVE_ACTIONS = ["登记失效", "登记超标"]
 
 
 class FeederService:
@@ -39,7 +40,12 @@ class FeederService:
             return None, missing
         rows = store.rows(MODULE)
         entry = {"id": max((int(row.get("id", 0)) for row in rows), default=0) + 1}
-        entry.update({field: values.get(field) for field in REQUIRED_FIELDS})
+        # 登记内容整体落地：接头数量、巡检日期等字段跟必填项一起存，不再只留必填三项
+        for field in ENTRY_FIELDS:
+            value = values.get(field)
+            if value is not None and str(value).strip() != "":
+                entry[field] = value
+        entry.setdefault("馈线状态", STATUS_ORDER[0])
         entry["status"] = STATUS_ORDER[0]
         entry["pending"] = True
         entry["abnormal"] = False
@@ -53,9 +59,22 @@ class FeederService:
         if action not in ACTION_RULES:
             return None, f"动作「{action}」不属于馈线巡检可执行范围"
         target = ACTION_RULES[action]
-        if target not in STATUS_ORDER:
-            return None, f"目标状态「{target}」不在允许的状态序列里"
+        current = str(entry.get("status") or STATUS_ORDER[0])
+        if current not in STATUS_ORDER:
+            return None, f"馈线当前状态「{current}」不在允许的状态序列里，请先核对登记内容"
+        # 状态只能顺着 正常→防水失效→接地超标→已修复 往前走，不许往回走
+        if STATUS_ORDER.index(target) <= STATUS_ORDER.index(current):
+            return None, (
+                f"馈线当前为「{current}」，只能顺着{'→'.join(STATUS_ORDER)}往前走，"
+                f"不能{action}退回「{target}」"
+            )
         entry["status"] = target
+        entry["馈线状态"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
-        return entry, f"馈线已{action}"
+        # 修复处理收口：登记失效把防水情况坐实为失效，安排修复把失效的防水关掉
+        if action == "登记失效":
+            entry["防水情况"] = "失效"
+        elif action == "安排修复" and entry.get("防水情况") == "失效":
+            entry["防水情况"] = "已修复"
+        return entry, f"馈线已{action}，当前状态「{target}」"

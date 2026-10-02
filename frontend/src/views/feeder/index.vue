@@ -19,9 +19,16 @@
     </div>
 
     <form class="filter-bar" @submit.prevent="reload">
-      <label v-for="field in filterFields" :key="field" class="filter-item">
-        <span>{{ field }}</span>
-        <input v-model="filters[field]" :placeholder="`按${field}检索`" />
+      <label class="filter-item">
+        <span>馈线编号</span>
+        <input v-model="filters.keyword" placeholder="按馈线编号检索" />
+      </label>
+      <label class="filter-item">
+        <span>馈线状态</span>
+        <select v-model="filters.status">
+          <option value="">全部状态</option>
+          <option v-for="status in statuses" :key="status" :value="status">{{ status }}</option>
+        </select>
       </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
@@ -78,11 +85,10 @@ const stats = [{"label": "正常馈线", "value": 0}, {"label": "失效馈线", 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const filters = ref({ keyword: '', status: '' })
 
 function resetFilters() {
-  filters.value = {}
+  filters.value = { keyword: '', status: '' }
   void reload()
 }
 
@@ -99,10 +105,11 @@ async function runAction(action: string, row: Row) {
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('馈线巡检动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.message ?? payload?.detail ?? '馈线巡检动作未生效，请稍后重试')
     }
     await reload()
   } catch (error) {
@@ -110,19 +117,34 @@ async function runAction(action: string, row: Row) {
   }
 }
 
+async function fetchList() {
+  const query = new URLSearchParams()
+  if (filters.value.keyword.trim()) {
+    query.set('keyword', filters.value.keyword.trim())
+  }
+  if (filters.value.status) {
+    query.set('status', filters.value.status)
+  }
+  const response = await request(`${ENDPOINT}?${query.toString()}`)
+  if (!response.ok) {
+    throw new Error('馈线列表读取失败')
+  }
+  const payload = await response.json()
+  rows.value = payload.items ?? []
+  total.value = payload.total ?? rows.value.length
+}
+
 async function reload() {
   errorMessage.value = ''
-  const query = new URLSearchParams(filters.value as Record<string, string>).toString()
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
-      throw new Error('馈线列表读取失败')
+    await fetchList()
+  } catch {
+    // 清单拉不到时再取一次，别停在半截
+    try {
+      await fetchList()
+    } catch (error) {
+      errorMessage.value = error instanceof Error ? error.message : '馈线巡检列表读取失败'
     }
-    const payload = await response.json()
-    rows.value = payload.items ?? []
-    total.value = payload.total ?? rows.value.length
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '馈线巡检列表读取失败'
   }
 }
 
